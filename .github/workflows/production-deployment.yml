@@ -1,0 +1,199 @@
+name: Production Deployment Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: '18'
+  PYTHON_VERSION: '3.9'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: stylze_user
+          POSTGRES_PASSWORD: stylze_secure_password_2025
+          POSTGRES_DB: stylze_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: ai-styling-backend/package-lock.json
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install Node dependencies
+        run: |
+          cd ai-styling-backend
+          npm ci
+      
+      - name: Install Python dependencies
+        run: |
+          cd ai-styling-ai
+          pip install -r requirements.txt
+      
+      - name: Run Node tests
+        run: |
+          cd ai-styling-backend
+          npm test
+        env:
+          DATABASE_URL: postgresql://stylze_user:stylze_secure_password_2025@localhost:5432/stylze_db
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET: test-secret-key
+      
+      - name: Run Python tests
+        run: |
+          cd ai-styling-ai
+          python -m pytest tests/
+        env:
+          DATABASE_URL: postgresql://stylze_user:stylze_secure_password_2025@localhost:5432/stylze_db
+      
+      - name: Run security scan
+        run: |
+          cd ai-styling-backend
+          npm audit --audit-level=high
+      
+      - name: Run linting
+        run: |
+          cd ai-styling-backend
+          npm run lint || true
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Build User Service
+        run: |
+          cd ai-styling-backend/services/user-service
+          docker build -t stylze-user-service:${{ github.sha }} .
+      
+      - name: Build Wardrobe Service
+        run: |
+          cd ai-styling-backend/services/wardrobe-service
+          docker build -t stylze-wardrobe-service:${{ github.sha }} .
+      
+      - name: Build Avatar Service
+        run: |
+          cd ai-styling-backend/services/avatar-service
+          docker build -t stylze-avatar-service:${{ github.sha }} .
+      
+      - name: Build AI Service
+        run: |
+          cd ai-styling-ai
+          docker build -t stylze-ai-service:${{ github.sha }} .
+      
+      - name: Save Docker images
+        run: |
+          docker save stylze-user-service:${{ github.sha }} | gzip > user-service.tar.gz
+          docker save stylze-wardrobe-service:${{ github.sha }} | gzip > wardrobe-service.tar.gz
+          docker save stylze-avatar-service:${{ github.sha }} | gzip > avatar-service.tar.gz
+          docker save stylze-ai-service:${{ github.sha }} | gzip > ai-service.tar.gz
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: docker-images
+          path: |
+            *.tar.gz
+
+  security-scan:
+    needs: build
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Run Trivy security scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+      
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  deploy-staging:
+    needs: [build, security-scan]
+    runs-on: ubuntu-latest
+    environment: staging
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Deploy to staging
+        run: |
+          echo "Deploying to staging environment..."
+          # Add deployment commands here when infrastructure is ready
+
+  deploy-production:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Deploy to production
+        run: |
+          echo "Deploying to production environment..."
+          # Add production deployment commands here when infrastructure is ready
+
+  notify:
+    needs: [deploy-production]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Notify deployment status
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Deployment successful!"
+          else
+            echo "❌ Deployment failed!"
+          fi
