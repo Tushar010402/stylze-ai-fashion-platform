@@ -1,0 +1,313 @@
+version: '3.8'
+
+services:
+  # Infrastructure Services
+  postgres:
+    container_name: stylze-postgres
+    image: postgres:16.2-alpine
+    environment:
+      POSTGRES_USER: stylze_user
+      POSTGRES_PASSWORD: stylze_secure_password_2025
+      POSTGRES_DB: stylze_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    networks:
+      - stylze-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stylze_user -d stylze_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    container_name: stylze-redis
+    image: redis:7.2-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - stylze-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    container_name: stylze-rabbitmq
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: stylze_rabbit_secure_2025
+      RABBITMQ_DEFAULT_VHOST: stylze
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - stylze-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    container_name: stylze-minio
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: stylze_minio_secure_2025
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - stylze-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # Microservices
+  user-service:
+    container_name: stylze-user-service
+    build:
+      context: ./ai-styling-backend/services/user-service
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgresql://stylze_user:stylze_secure_password_2025@postgres:5432/stylze_db
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: stylze-super-secret-jwt-key-2024
+    ports:
+      - "3001:3001"
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - stylze-network
+    restart: unless-stopped
+
+  wardrobe-service:
+    container_name: stylze-wardrobe-service
+    build:
+      context: ./ai-styling-backend/services/wardrobe-service
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3002
+      DATABASE_URL: postgresql://stylze_user:stylze_secure_password_2025@postgres:5432/stylze_db
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: stylze-super-secret-jwt-key-2024
+    ports:
+      - "3002:3002"
+    volumes:
+      - ./uploads:/app/uploads
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - stylze-network
+    restart: unless-stopped
+
+  avatar-service:
+    container_name: stylze-avatar-service
+    build:
+      context: ./ai-styling-backend/services/avatar-service
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3003
+      DATABASE_URL: postgresql://stylze_user:stylze_secure_password_2025@postgres:5432/stylze_db
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: stylze-super-secret-jwt-key-2024
+    ports:
+      - "3003:3003"
+    volumes:
+      - ./uploads:/app/uploads
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - stylze-network
+    restart: unless-stopped
+
+  recommendation-service:
+    container_name: stylze-recommendation-service
+    build:
+      context: ./ai-styling-backend/services/recommendation-service
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3004
+      DATABASE_URL: postgresql://stylze_user:stylze_secure_password_2025@postgres:5432/stylze_db
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: stylze-super-secret-jwt-key-2024
+      GOOGLE_AI_API_KEY: AIzaSyDE1iNNwRD3LQr93MTQzFN4LF84K-Af-hY
+    ports:
+      - "3004:3004"
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - stylze-network
+    restart: unless-stopped
+
+  notification-service:
+    container_name: stylze-notification-service
+    build:
+      context: ./ai-styling-backend/services/notification-service
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3005
+      DATABASE_URL: postgresql://stylze_user:stylze_secure_password_2025@postgres:5432/stylze_db
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://admin:stylze_rabbit_secure_2025@rabbitmq:5672/stylze
+      JWT_SECRET: stylze-super-secret-jwt-key-2024
+      EMAIL_HOST: smtpout.secureserver.net
+      EMAIL_PORT: 465
+      EMAIL_USER: reset@floelife.in
+      EMAIL_PASS: Tushar@098
+    ports:
+      - "3005:3005"
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+    networks:
+      - stylze-network
+    restart: unless-stopped
+
+  api-gateway:
+    container_name: stylze-api-gateway
+    build:
+      context: ./ai-styling-backend/services/api-gateway
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3010
+      JWT_SECRET: stylze-super-secret-jwt-key-2024
+      USER_SERVICE_URL: http://user-service:3001
+      WARDROBE_SERVICE_URL: http://wardrobe-service:3002
+      AVATAR_SERVICE_URL: http://avatar-service:3003
+      RECOMMENDATION_SERVICE_URL: http://recommendation-service:3004
+      NOTIFICATION_SERVICE_URL: http://notification-service:3005
+    ports:
+      - "3010:3010"
+    depends_on:
+      - user-service
+      - wardrobe-service
+      - avatar-service
+      - recommendation-service
+      - notification-service
+    networks:
+      - stylze-network
+    restart: unless-stopped
+
+  web-app:
+    container_name: stylze-web-app
+    build:
+      context: ./ai-styling-web
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: http://api-gateway:3010/api
+      NEXT_PUBLIC_WS_URL: http://api-gateway:3010
+    ports:
+      - "3006:3000"
+    depends_on:
+      - api-gateway
+    networks:
+      - stylze-network
+    restart: unless-stopped
+
+  # Monitoring
+  prometheus:
+    container_name: stylze-prometheus
+    image: prom/prometheus:latest
+    volumes:
+      - ./infrastructure/prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - "9090:9090"
+    networks:
+      - stylze-network
+    restart: unless-stopped
+
+  grafana:
+    container_name: stylze-grafana
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: stylze_grafana_2025
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/grafana/dashboards:/etc/grafana/provisioning/dashboards
+    ports:
+      - "3007:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - stylze-network
+    restart: unless-stopped
+
+  # Optional: pgAdmin for database management
+  pgadmin:
+    container_name: stylze-pgadmin
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@stylze.ai
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - stylze-network
+    restart: unless-stopped
+
+  # Optional: Jaeger for distributed tracing
+  jaeger:
+    container_name: stylze-jaeger
+    image: jaegertracing/all-in-one:latest
+    environment:
+      COLLECTOR_ZIPKIN_HOST_PORT: ":9411"
+    ports:
+      - "5775:5775/udp"
+      - "6831:6831/udp"
+      - "6832:6832/udp"
+      - "5778:5778"
+      - "16686:16686"
+      - "14268:14268"
+      - "14250:14250"
+      - "9411:9411"
+    networks:
+      - stylze-network
+    restart: unless-stopped
+
+networks:
+  stylze-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  minio_data:
+  prometheus_data:
+  grafana_data:
+  pgadmin_data:

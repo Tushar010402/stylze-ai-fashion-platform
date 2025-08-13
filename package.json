@@ -1,0 +1,23 @@
+{
+  "name": "personal_stylze",
+  "version": "1.0.0",
+  "description": "<div align=\"center\">   <img src=\"https://img.shields.io/badge/Version-1.0.0-blue.svg\" />   <img src=\"https://img.shields.io/badge/Node.js-18+-green.svg\" />   <img src=\"https://img.shields.io/badge/Python-3.11+-yellow.svg\" />   <img src=\"https://img.shields.io/badge/React_Native-0.73-61DAFB.svg\" />   <img src=\"https://img.shields.io/badge/Next.js-14-black.svg\" />   <img src=\"https://img.shields.io/badge/Status-Production_Ready-success.svg\" /> </div>",
+  "main": "test-system.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.864.0",
+    "amqplib": "^0.10.8",
+    "axios": "^1.11.0",
+    "pg": "^8.16.3",
+    "redis": "^5.8.1"
+  }
+}

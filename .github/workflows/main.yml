@@ -1,0 +1,307 @@
+name: Main CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: '18'
+  PYTHON_VERSION: '3.11'
+  GKE_CLUSTER: stylze-cluster
+  GKE_ZONE: us-central1-a
+  DEPLOYMENT_NAME: stylze-app
+
+jobs:
+  # Testing Jobs
+  test-backend:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [user-service, avatar-service, notification-service, api-gateway, recommendation-service]
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: ai-styling-backend/services/${{ matrix.service }}/package-lock.json
+    
+    - name: Install dependencies
+      working-directory: ai-styling-backend/services/${{ matrix.service }}
+      run: npm ci
+    
+    - name: Run tests
+      working-directory: ai-styling-backend/services/${{ matrix.service }}
+      run: npm test -- --coverage
+    
+    - name: Upload coverage
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./ai-styling-backend/services/${{ matrix.service }}/coverage/lcov.info
+        flags: ${{ matrix.service }}
+
+  test-python-services:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [wardrobe-service, ai-styling-ai]
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      working-directory: ${{ matrix.service == 'wardrobe-service' && 'ai-styling-backend/services/wardrobe-service' || 'ai-styling-ai' }}
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov
+    
+    - name: Run tests
+      working-directory: ${{ matrix.service == 'wardrobe-service' && 'ai-styling-backend/services/wardrobe-service' || 'ai-styling-ai' }}
+      run: pytest --cov=. --cov-report=xml
+    
+    - name: Upload coverage
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: ${{ matrix.service }}
+
+  test-web:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: ai-styling-web/package-lock.json
+    
+    - name: Install dependencies
+      working-directory: ai-styling-web
+      run: npm ci
+    
+    - name: Run tests
+      working-directory: ai-styling-web
+      run: npm test
+    
+    - name: Build
+      working-directory: ai-styling-web
+      run: npm run build
+
+  test-mobile:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: ai-styling-mobile/package-lock.json
+    
+    - name: Install dependencies
+      working-directory: ai-styling-mobile
+      run: npm ci
+    
+    - name: Run tests
+      working-directory: ai-styling-mobile
+      run: npm test
+
+  # Linting Jobs
+  lint:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+    
+    - name: Run ESLint
+      run: |
+        npm install -g eslint
+        find . -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" | xargs eslint
+    
+    - name: Run Prettier check
+      run: |
+        npm install -g prettier
+        prettier --check "**/*.{js,jsx,ts,tsx,json,css,md}"
+
+  # Security Scanning
+  security:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Run Trivy security scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+    
+    - name: Upload Trivy results to GitHub Security
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  # Build and Push Docker Images
+  build-and-push:
+    needs: [test-backend, test-python-services, test-web, test-mobile, lint]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    strategy:
+      matrix:
+        service: 
+          - user-service
+          - avatar-service
+          - wardrobe-service
+          - notification-service
+          - api-gateway
+          - recommendation-service
+          - ai-service
+          - web-app
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    
+    - name: Login to Google Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: gcr.io
+        username: _json_key
+        password: ${{ secrets.GCP_SA_KEY }}
+    
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v4
+      with:
+        context: ${{ matrix.service == 'ai-service' && './ai-styling-ai' || matrix.service == 'web-app' && './ai-styling-web' || format('./ai-styling-backend/services/{0}', matrix.service) }}
+        push: true
+        tags: |
+          gcr.io/${{ secrets.GCP_PROJECT }}/stylze-${{ matrix.service }}:${{ github.sha }}
+          gcr.io/${{ secrets.GCP_PROJECT }}/stylze-${{ matrix.service }}:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  # Deploy to GKE
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Cloud SDK
+      uses: google-github-actions/setup-gcloud@v1
+      with:
+        service_account_key: ${{ secrets.GCP_SA_KEY }}
+        project_id: ${{ secrets.GCP_PROJECT }}
+        export_default_credentials: true
+    
+    - name: Get GKE credentials
+      run: |
+        gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} \
+          --zone ${{ env.GKE_ZONE }}
+    
+    - name: Deploy to GKE
+      run: |
+        # Update image tags in k8s manifests
+        kubectl set image deployment/user-service \
+          user-service=gcr.io/${{ secrets.GCP_PROJECT }}/stylze-user-service:${{ github.sha }} \
+          -n stylze-prod
+        
+        kubectl set image deployment/avatar-service \
+          avatar-service=gcr.io/${{ secrets.GCP_PROJECT }}/stylze-avatar-service:${{ github.sha }} \
+          -n stylze-prod
+        
+        kubectl set image deployment/wardrobe-service \
+          wardrobe-service=gcr.io/${{ secrets.GCP_PROJECT }}/stylze-wardrobe-service:${{ github.sha }} \
+          -n stylze-prod
+        
+        kubectl set image deployment/api-gateway \
+          api-gateway=gcr.io/${{ secrets.GCP_PROJECT }}/stylze-api-gateway:${{ github.sha }} \
+          -n stylze-prod
+        
+        kubectl set image deployment/web-app \
+          web-app=gcr.io/${{ secrets.GCP_PROJECT }}/stylze-web-app:${{ github.sha }} \
+          -n stylze-prod
+        
+        # Wait for rollout
+        kubectl rollout status deployment/api-gateway -n stylze-prod
+        kubectl rollout status deployment/web-app -n stylze-prod
+    
+    - name: Run smoke tests
+      run: |
+        API_URL=$(kubectl get service api-gateway -n stylze-prod -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        curl -f http://$API_URL/health || exit 1
+
+  # E2E Tests
+  e2e-tests:
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+    
+    - name: Install Cypress
+      run: |
+        npm install -g cypress
+        npm install -g wait-on
+    
+    - name: Get deployed URL
+      run: |
+        echo "APP_URL=$(kubectl get service web-app -n stylze-prod -o jsonpath='{.status.loadBalancer.ingress[0].ip}')" >> $GITHUB_ENV
+    
+    - name: Wait for app to be ready
+      run: wait-on http://${{ env.APP_URL }} -t 60000
+    
+    - name: Run E2E tests
+      run: cypress run --config baseUrl=http://${{ env.APP_URL }}
+
+  # Notify on success/failure
+  notify:
+    needs: [e2e-tests]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Send Slack notification
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        text: |
+          Deployment ${{ job.status == 'success' && 'succeeded' || 'failed' }}
+          Commit: ${{ github.sha }}
+          Author: ${{ github.actor }}
+          Branch: ${{ github.ref }}
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}

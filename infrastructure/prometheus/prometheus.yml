@@ -1,0 +1,56 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Node.js services metrics
+  - job_name: 'user-service'
+    static_configs:
+      - targets: ['host.docker.internal:3001']
+    metrics_path: '/metrics'
+
+  - job_name: 'wardrobe-service'
+    static_configs:
+      - targets: ['host.docker.internal:3002']
+    metrics_path: '/metrics'
+
+  - job_name: 'avatar-service'
+    static_configs:
+      - targets: ['host.docker.internal:3003']
+    metrics_path: '/metrics'
+
+  - job_name: 'recommendation-service'
+    static_configs:
+      - targets: ['host.docker.internal:3004']
+    metrics_path: '/metrics'
+
+  - job_name: 'notification-service'
+    static_configs:
+      - targets: ['host.docker.internal:3005']
+    metrics_path: '/metrics'
+
+  - job_name: 'api-gateway'
+    static_configs:
+      - targets: ['host.docker.internal:3010']
+    metrics_path: '/metrics'
+
+  # PostgreSQL exporter (if added)
+  - job_name: 'postgresql'
+    static_configs:
+      - targets: ['postgres:5432']
+
+  # Redis exporter (if added)
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+
+  # RabbitMQ metrics
+  - job_name: 'rabbitmq'
+    static_configs:
+      - targets: ['rabbitmq:15692']
+    metrics_path: '/metrics'
